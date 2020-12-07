@@ -1,0 +1,511 @@
+---
+title: "CEE 218X Assignment 2"
+output: html_document
+---
+
+#### Xingyu Li
+
+```{r setup, include = F}
+knitr::opts_chunk$set(warning = F, message = F)
+```
+
+## Section 1
+An equity analysis of educational attainment by race. Plot the “stacked” and “filled” bar charts as demonstrated in 2.2
+
+### Load library
+```{r load, message=FALSE, warning=FALSE, paged.print=FALSE}
+library(tidyverse)
+library(sf)
+library(tigris)
+library(leaflet)
+library(censusapi)
+# Add key to .Renviron
+Sys.setenv(CENSUS_KEY="6cb825f018fda6f85e0ea7f9488d1bc9140df2a7")
+# Reload .Renviron
+readRenviron("~/.Renviron")
+# Check to see that the expected key is output in your R console
+Sys.getenv("CENSUS_KEY")
+
+acs_vars_2019_1yr <-
+  listCensusMetadata(
+    name = "2019/acs/acs1",
+    type = "variables"
+  )
+
+acs_vars_2019_1yr <- readRDS("acs_vars_2019_1yr.rds")
+```
+
+### Create race labels
+```{r}
+census_race_labels <- 
+  c(
+    "White Alone",
+    "Black or African American",
+    "American Indian and Alaska Native Alone",
+    "Asian Alone",
+    "Native Hawaiian and Other Pacific Islander Alone)",
+    "Some Other Race Alone",
+    "Two or More Races"
+  )
+
+```
+
+### Generate education file
+```{r}
+smc_education_race <-
+  1:7 %>% 
+  map_dfr(function(x){
+    getCensus(
+      name = "acs/acs1",
+      vintage = 2019,
+      region = "county:081",
+      regionin = "state:06",
+      vars = paste0("group(B15002",LETTERS[x],")")
+    ) %>%
+      select(!c(GEO_ID,state,NAME) & !ends_with(c("EA","MA","M"))) %>%
+      pivot_longer(
+        ends_with("E"),
+        names_to = "variable",
+        values_to = "estimate"
+      ) %>%
+      left_join(
+        acs_vars_2019_1yr %>% 
+          select(name, label), 
+        by = c("variable" = "name")
+      ) %>% 
+      select(-variable) %>% 
+      separate(
+        label,
+        into = c(NA,NA,"sex","education"),
+        sep = "!!"
+      ) %>% 
+      filter(!is.na(education)) %>% 
+      mutate(race = census_race_labels[x]) %>%
+      group_by(education,race) %>%
+      summarize(
+        estimate = 
+          sum(
+            estimate, na.rm = T
+            )
+        )
+  })
+```
+
+### Clean NA values in file
+```{r}
+smc_education_race<-
+  smc_education_race %>% 
+  filter(
+    race %in% 
+      c(
+    "White Alone",
+    "Black or African American",
+    "Asian Alone",
+    "Some Other Race Alone",
+    "Two or More Races"
+      )
+  ) 
+```
+
+### Plot San Mateo education chart
+```{r}
+smc_race_total <-
+  smc_education_race %>% 
+  group_by(race) %>% 
+  summarize(estimate = sum(estimate)) %>% 
+  mutate(education = "Total")
+
+saveRDS(smc_race_total, file = "smc_race_total.rds")
+saveRDS(smc_education_race, file = "smc_education_race.rds")
+
+smc_education_race %>% 
+  group_by(education, race) %>% 
+  summarize(estimate = sum(estimate)) %>% 
+  rbind(smc_race_total) %>% 
+  ggplot() +
+  geom_bar(
+    aes(
+      x = education %>% factor(levels = rev(c("Total",smc_education_race$education[1:8]))),
+      y = estimate,
+      fill = race
+    ),
+    stat = "identity",
+    position = "fill"
+  ) +
+  labs(
+    x = "Education attainment",
+    y = "Proportion of individuals of each race",
+    title = "San Mateo County Education Attainment by Race",
+    fill = "Race of individuals"
+  ) +
+  coord_flip() +
+  theme(
+    legend.position = "bottom",
+    legend.direction = "vertical"
+  )
+```
+Non-white population percentage in San Mateo County
+```{r}
+((sum(smc_race_total$estimate[1:4])/sum(smc_race_total$estimate))*100) %>% round()
+```
+```{r}
+((smc_education_race %>% 
+  filter(education %in% smc_education_race$education[6]) %>% 
+  filter(race != "White Alone") %>% 
+  pull(estimate) %>% 
+  sum()) /
+  (smc_education_race %>% 
+    filter(education %in% smc_education_race$education[6]) %>% 
+    pull(estimate) %>% 
+    sum()) * 100) %>% 
+  round()
+```
+```{r}
+((((smc_education_race %>% 
+  filter(education %in% smc_education_race$education[6]) %>% 
+  filter(race != "White Alone") %>% 
+  pull(estimate) %>% 
+  sum()) /
+  (smc_education_race %>% 
+    filter(education %in% smc_education_race$education[6]) %>% 
+    pull(estimate) %>% 
+    sum())) / (sum(smc_race_total$estimate[1:4])/sum(smc_race_total$estimate)) - 1) * 100) %>% 
+  round()
+```
+From the data accessible, The overall population in San Mateo County is 48% non-White, but the subpopulation of extremely low education (Less than 9th grade) is 64% non-White. If income were "race-blind", these two percentages would be the same. However, non-White population is 35% more likely to be extremely low education than in the "race-blind" scenario.
+
+
+
+## Section 2
+An estimate of the number and percentage of K-12 students who have no internet access at home, using the latest available PUMS data. 
+
+### Load PUMS
+```{r message=FALSE, warning=FALSE, paged.print=FALSE}
+# temp <- tempfile()
+# download.file("https://www2.census.gov/programs-su# rveys/acs/data/pums/2018/1-Year/csv_hca.zip",destf# ile = temp, mode = "wb")
+
+# pums_hca_2018_1yr <- read_csv(unzip(temp,"psam_h06.csv"))
+# unlink(temp)
+# saveRDS(pums_hca_2018_1yr, file = "pums_hca_2018_1yr.rds")
+pums_hca_2018_1yr <- readRDS("pums_hca_2018_1yr.RDS")
+
+
+# install.packages("devtools")
+# devtools::install_github("walkerke/tidycensus")
+
+library(tidycensus)
+                                     
+```
+
+### Check variables
+```{r}
+pums_vars_2018 <- 
+  pums_variables %>%
+  filter(year == 2018, survey == "acs1")
+
+```
+
+### Get CA PUMS
+```{r echo=TRUE, message=FALSE, warning=FALSE, paged.print=FALSE}
+# census_api_key("6cb825f018fda6f85e0ea7f9488d1bc9140df2a7")
+# ca_pums <- get_pums(
+#   variables = c(
+#    "PUMA",
+#    "SERIALNO",
+#    "SCHG",
+#    "ACCESS",
+#    "PWGTP"
+#  ),
+#  state = "CA",
+#  year = 2018,
+#  survey = "acs1",
+#  recode = T
+#)
+# saveRDS(ca_pums,"ca_pums.rds")
+ca_pums <- readRDS("ca_pums.rds")
+```
+
+### Get bay area PUMS
+```{r}
+ca_pumas <-
+  pumas("CA", cb = T, progress_bar = F)
+
+ca_counties <- counties("06", cb = T, progress_bar = F)
+
+bay_county_names <-
+  c(
+    "Alameda",
+    "Contra Costa",
+    "Marin",
+    "Napa",
+    "San Francisco",
+    "San Mateo",
+    "Santa Clara",
+    "Solano",
+    "Sonoma"
+  )
+
+bay_counties <-
+  ca_counties %>%
+  filter(NAME %in% bay_county_names)
+
+bay_pumas <-
+  ca_pumas %>% 
+  st_centroid() %>% 
+  .[bay_counties, ] %>% 
+  st_set_geometry(NULL) %>% 
+  left_join(ca_pumas %>% select(GEOID10)) %>% 
+  st_as_sf()
+
+bay_pums <-
+  ca_pums %>% 
+  filter(PUMA %in% bay_pumas$PUMACE10)
+
+```
+
+### Generate K-12 internet access file
+```{r}
+bay_pums_access <-
+  bay_pums %>% 
+  filter(WGTP != 0) %>% 
+  filter(
+    SCHG %in% c("02","03","04","05","06","07","08","09","10","11","12","13","14")
+  ) %>%
+  mutate(
+    k12_no_access = ifelse(
+        (ACCESS == "3"),
+      PWGTP,
+      0
+    )
+  ) %>% 
+  group_by(PUMA) %>% 
+  summarize(
+    k12_no_access = sum(k12_no_access, na.rm = T),
+    k12_total = sum(PWGTP, na.rm = T)
+  ) %>% 
+  mutate(
+    perc_k12_no_access =
+      k12_no_access/k12_total*100
+  ) %>% 
+  left_join(
+    bay_pumas %>% 
+      select(PUMACE10),
+    by = c("PUMA" = "PUMACE10")
+  ) %>% 
+  st_as_sf()
+
+saveRDS(bay_pums_access,"bay_pums_access.rds")
+```
+
+### Plot map
+```{r}
+pums_pal <- colorNumeric(
+  palette = "Oranges",
+  domain = bay_pums_access$perc_k12_no_access
+)
+
+leaflet() %>%
+  addTiles() %>% 
+  addPolygons(
+    data = bay_pums_access,
+    fillColor = ~pums_pal(perc_k12_no_access),
+    color = "white",
+    opacity = 0.5,
+    fillOpacity = 0.5,
+    weight = 1,
+    label = ~paste0(
+      round(perc_k12_no_access), 
+      "% K-12 students no access to internet"
+    ),
+    highlightOptions = highlightOptions(
+      weight = 2,
+      opacity = 1
+    )
+  ) %>% 
+  addLegend(
+    data = bay_pums_access,
+    pal = pums_pal,
+    values = ~perc_k12_no_access,
+    title = "% K-12 students no access to internet"
+  )
+```
+
+```{r}
+sum(bay_pums_access$k12_no_access)/sum(bay_pums_access$k12_total)*100
+```
+From the map and the data, we can see that 2.5% of K-12 students in the bay area do not have access to internet at home. This is a serious problem especially during COVID as the education is provided remotely. In some areas, this problem is more severe than average. For example, the in one section of San Francisco, one section of San Jose, and one section east of Alameda, over 12% of the K-12 students do not have access to internet at home.
+
+
+## Section 3
+A migration analysis, as demonstrated in 2.3, using data on educational attainment. 
+
+### load library
+```{r}
+library(tidyverse)
+library(censusapi)
+
+Sys.setenv(CENSUS_KEY="6cb825f018fda6f85e0ea7f9488d1bc9140df2a7")
+
+acs_vars_2019_1yr <-
+  listCensusMetadata(
+    name = "2019/acs/acs1",
+    type = "variables"
+  )
+```
+ 
+### Generate 2019 migration current file 
+```{r}
+smc_mobility_current_19 <- 
+  getCensus(
+    name = "acs/acs1",
+    vintage = 2019,
+    region = "county:081",
+    regionin = "state:06",
+    vars = c("group(B07009)")
+  ) %>% 
+  select(!c(GEO_ID,state,NAME) & !ends_with(c("EA","MA","M"))) %>%
+  pivot_longer(
+    ends_with("E"),
+    names_to = "variable",
+    values_to = "estimate"
+  ) %>%
+  left_join(
+    acs_vars_2019_1yr %>% 
+      select(name, label), 
+    by = c("variable" = "name")
+  ) %>% 
+  select(-variable) %>% 
+  separate(
+    label,
+    into = c(NA,NA,"mobility","education"),
+    sep = "!!"
+  ) %>% 
+  mutate(
+    mobility = ifelse(
+      mobility %in% c("Same house 1 year ago:", "Moved within same county:"),
+      "Here since last year",
+      "Inflow"
+    )
+  ) %>% 
+  filter(!is.na(education)) %>% 
+  group_by(mobility, education) %>% 
+  summarize(estimate = sum(estimate))
+```
+
+### Generate 2019 migration last year file 
+```{r}
+smc_mobility_lastyear_19 <- 
+  getCensus(
+    name = "acs/acs1",
+    vintage = 2019,
+    region = "county:081",
+    regionin = "state:06",
+    vars = c("group(B07409)")
+  ) %>% 
+  select(!c(GEO_ID,state,NAME) & !ends_with(c("EA","MA","M"))) %>%
+  pivot_longer(
+    ends_with("E"),
+    names_to = "variable",
+    values_to = "estimate"
+  ) %>%
+  left_join(
+    acs_vars_2019_1yr %>% 
+      select(name, label), 
+    by = c("variable" = "name")
+  ) %>% 
+  select(-variable) %>% 
+  separate(
+    label,
+    into = c(NA,NA,"mobility","education"),
+    sep = "!!"
+  ) %>% 
+  mutate(
+      mobility = ifelse(
+      mobility %in% c("Same house:", "Moved within same county:"),
+      "Here since last year",
+      "Outflow"
+    )
+  ) %>% 
+  filter(!is.na(education)) %>% 
+  group_by(mobility, education) %>% 
+  summarize(estimate = sum(estimate))
+```
+
+### Generate 2018 migration current file 
+```{r}
+smc_mobility_current_18 <- 
+  getCensus(
+    name = "acs/acs1",
+    vintage = 2018,
+    region = "county:081",
+    regionin = "state:06",
+    vars = c("group(B07009)")
+  ) %>% 
+  select(!c(GEO_ID,state,NAME) & !ends_with(c("EA","MA","M"))) %>%
+  pivot_longer(
+    ends_with("E"),
+    names_to = "variable",
+    values_to = "estimate"
+  ) %>%
+  left_join(
+    acs_vars_2019_1yr %>% 
+      select(name, label), 
+    by = c("variable" = "name")
+  ) %>% 
+  select(-variable) %>% 
+  separate(
+    label,
+    into = c(NA,NA,"mobility","education"),
+    sep = "!!"
+  ) %>% 
+  mutate(
+    mobility = "Here last year"
+  ) %>% 
+  filter(!is.na(education)) %>% 
+  group_by(mobility, education) %>% 
+  summarize(estimate = sum(estimate))
+```
+
+### Generate 2019 migration flow file 
+```{r}
+smc_flows_19 <-
+  rbind(
+    smc_mobility_current_18,
+    smc_mobility_lastyear_19 %>% 
+      filter(mobility == "Outflow"),
+    smc_mobility_current_19 %>% 
+      filter(mobility == "Inflow"),
+    smc_mobility_current_19 %>% 
+      group_by(education) %>% 
+      summarize(estimate = sum(estimate)) %>% 
+      mutate(mobility = "Here this year")
+  ) %>% 
+  pivot_wider(
+    names_from = mobility,
+    values_from = estimate
+  ) %>% 
+  mutate(
+    `External net` = Inflow - Outflow,
+    `Internal net` = `Here this year` - `Here last year` - `External net`,
+  ) %>% 
+  select(
+    `Education` = education, 
+    `Internal net`,
+    `External net`,
+    `Here last year`, 
+    `Here this year`, 
+    Outflow, 
+    Inflow
+  )
+
+smc_flows_19
+```
+
+Positive internal net: more people staying in the bay area in 2018 acquire this degree in 2019
+Positive external net: more people of this degree coming to the bay area than leaving the bay area between 2018 and 2019.
+
+For Bachelor's degree, it has negative internal net and external net. People with this degree tends to leave the bay area. For Graduate and professional degree, it has negative internal net and external net. People with this degree tends to flow into the bay area. This shows the trend that the bay area job market requires employees with higher and higher education background. 
+
+For less than high school graduate, the rather low education, it has negative internal net and external net. People with this degree tends to leave the bay area. 
+
+In total, outflow is larger than inflow. This means the job market in the bay area is getting smaller. 
